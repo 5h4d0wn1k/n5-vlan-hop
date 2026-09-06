@@ -1,194 +1,82 @@
-# N5 — VLAN Hopping Attack Tool
+# N5 — VLAN Hopping (tag engine + gated live injection)
 
-VLAN security testing via double-tagging and DTP spoofing attacks.
+Constructs genuine 802.1Q double- and single-tagged Ethernet frames and DTP
+frames. The core tag-construction engine runs fully offline and is verified
+byte-for-byte; real frame injection is gated behind `--live`/`--interface`.
 
 ## Overview
 
-This project implements VLAN hopping attack techniques for authorized security testing of network infrastructure. VLAN hopping is a network attack that exploits misconfigured trunk links to access unauthorized VLANs.
+This project implements the packet-construction side of VLAN-hopping
+techniques — double-tagging (802.1Q-in-802.1Q) and DTP frame building — for
+authorized lab testing of switch trunk/VLAN handling.
 
-**Attack techniques implemented:**
-- **Double-Tagging (802.1Q-in-802.1Q)**: Frames with two VLAN tags
-- **DTP Spoofing**: Negotiating trunk links via Dynamic Trunking Protocol
-- **VLAN Enumeration**: Discovering active VLANs on a network segment
+**Components:**
+- `VLANTag` / `DoubleTag` (vlan_utils) — 802.1Q tag bytes with correct TPID and
+  TCI bit packing, parse-back round-trip.
+- `DoubleTagPacket` — full Ethernet frame with two 802.1Q tags.
+- `DTPNegotiator` / `DTPPacket` — DTP frame header + TLVs.
+- Live injectors (`double-tag`, `dtp`, `enum`) — gated behind `--live` (root,
+  AF_PACKET raw sockets).
 
-**Use cases:**
-- Network infrastructure security testing
-- VLAN misconfiguration detection
-- Trunk link vulnerability assessment
-- Security hardening validation
+## What Works
 
-## Features
-
-- **Double-Tagging Attack**: Craft frames with nested VLAN tags
-- **DTP Spoofing**: Send DTP frames to negotiate trunk links
-- **VLAN Enumeration**: Scan and discover active VLANs
-- **Packet Crafting**: Full control over VLAN tags and payloads
-- **Statistics Tracking**: Monitor attack progress and results
-
-## Architecture
-
-```
-Attacker                    Trunk Link                    Target
-    |                           |                           |
-    |-- Double-tagged frame --->|                           |
-    |   (Outer: Native VLAN)    |                           |
-    |   (Inner: Target VLAN)   |                           |
-    |                           |-- Frame to Target VLAN -->|
-    |                           |                           |
-```
-
-## Installation
-
-```bash
-# Clone and install
-git clone https://github.com/yourorg/n5-vlan-hop.git
-cd n5-vlan-hop/firmware
-pip install -r requirements.txt
-
-# Or install directly
-pip install pycryptodome scapy
-```
-
-### Dependencies
-
-```bash
-pip install pycryptodome scapy
-```
+- **Offline byte-for-byte check (`check`)** — builds a double-tagged frame and
+  compares it field-by-field against a hand-written reference vector.
+- **Tag library round-trips** — `DoubleTag.from_bytes`/`to_bytes`.
+- **Live mode gating** — `double-tag`, `dtp`, `enum` refuse to run without
+  `--live`; the offline engine is the default path.
 
 ## Usage
 
-### Double-Tagging Attack
+```bash
+# Offline tag-construction check (no privileges, deterministic)
+python3 vlan_hop.py check
+
+# Build a reference double-tagged frame and show it
+python3 vlan_hop.py check
+
+# Live double-tag injection (root): explicit --live required
+sudo python3 vlan_hop.py --live double-tag --interface eth0 \
+      --src-mac 00:11:22:33:44:55 --outer-vlan 10 --inner-vlan 20
+
+# Live DTP spoof / VLAN enumeration (root): --live required
+sudo python3 vlan_hop.py --live dtp --interface eth0 --src-mac 00:11:22:33:44:55
+```
+
+## Tests
 
 ```bash
-# Basic double-tag attack
-sudo python3 vlan_hop.py double-tag \
-    --interface eth0 \
-    --src-mac aa:bb:cc:dd:ee:ff \
-    --outer-vlan 1 \
-    --inner-vlan 100
-
-# With packet count
-sudo python3 vlan_hop.py double-tag \
-    --interface eth0 \
-    --src-mac aa:bb:cc:dd:ee:ff \
-    --outer-vlan 1 \
-    --inner-vlan 100 \
-    --count 50
+python3 -m unittest discover -s tests
 ```
 
-### DTP Spoofing
+## Live Lab Test Plan
 
-```bash
-# Send DTP frames to negotiate trunk
-sudo python3 vlan_hop.py dtp \
-    --interface eth0 \
-    --src-mac aa:bb:cc:dd:ee:ff \
-    --mode auto
+> Authorized own-lab use only. Use documented placeholders (192.0.2.x, 00:11:22:33:44:55).
 
-# Continuous DTP spoofing
-sudo python3 vlan_hop.py dtp \
-    --interface eth0 \
-    --src-mac aa:bb:cc:dd:ee:ff \
-    --mode trunk \
-    --count 20 \
-    --interval 2.0
-```
+1. On a lab switch with a native VLAN 10 access port and a trunk, run
+   `sudo python3 vlan_hop.py --live double-tag --interface <lab-iface> --src-mac 00:11:22:33:44:55 --outer-vlan 10 --inner-vlan 20`.
+2. Sniff the lab link with tcpdump and confirm frames carry `vlan 10` and
+   `vlan 20` tags and the correct source MAC.
+3. On another lab machine, confirm traffic with inner VLAN 20 reaches the
+   target segment (double-tagging demo).
+4. Run `dtp` and confirm DTP frames are visible on the trunk candidate port.
 
-### VLAN Enumeration
+## Metrics
 
-```bash
-# Scan default VLAN range (1-100)
-sudo python3 vlan_hop.py enum \
-    --interface eth0 \
-    --src-mac aa:bb:cc:dd:ee:ff
+Core offline check is deterministic and unit-tested:
 
-# Scan specific range
-sudo python3 vlan_hop.py enum \
-    --interface eth0 \
-    --src-mac aa:bb:cc:dd:ee:ff \
-    --start-vlan 100 \
-    --end-vlan 200
-```
-
-### Example Output
-
-```
-=== Double-Tagging Attack ===
-Outer VLAN: 1
-Inner VLAN: 100
-Target VLAN: 100
-[SENT] 10/50 packets
-[SENT] 20/50 packets
-[SENT] 30/50 packets
-[SENT] 40/50 packets
-[SENT] 50/50 packets
-[DONE] 50 packets sent
-```
-
-## Command Reference
-
-### `double-tag` Command
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--interface, -i` | Network interface | (required) |
-| `--src-mac` | Source MAC address | (required) |
-| `--outer-vlan` | Outer VLAN tag | (required) |
-| `--inner-vlan` | Inner VLAN tag | (required) |
-| `--count` | Packet count | 10 |
-| `--interval` | Interval (s) | 0.1 |
-
-### `dtp` Command
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--interface, -i` | Network interface | (required) |
-| `--src-mac` | Source MAC address | (required) |
-| `--mode` | DTP mode | auto |
-| `--count` | Frame count | 10 |
-| `--interval` | Interval (s) | 1.0 |
-
-### `enum` Command
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--interface, -i` | Network interface | (required) |
-| `--src-mac` | Source MAC address | (required) |
-| `--start-vlan` | Start VLAN ID | 1 |
-| `--end-vlan` | End VLAN ID | 100 |
-
-## How It Works
-
-### Double-Tagging Attack
-1. Attacker sends frame with two 802.1Q tags
-2. Outer tag matches native VLAN (e.g., VLAN 1)
-3. Switch strips outer tag, forwards on native VLAN
-4. Inner tag remains, switches forward to target VLAN
-5. Frame reaches target on unauthorized VLAN
-
-### DTP Spoofing
-1. Attacker sends DTP frames advertising trunk capability
-2. Switch responds and negotiates trunk link
-3. Trunk link allows traffic on all VLANs
-4. Attacker gains access to all VLANs
-
-## Mitigation
-
-1. **Disable DTP** on all access ports: `switchport nonegotiate`
-2. **Set native VLAN** to unused VLAN ID
-3. **Filter VLANs** on trunk links
-4. **Use VLAN ACLs** for inter-VLAN traffic
-5. **Monitor trunk formation** with IDS/IPS
-
-## Security Considerations
-
-- Requires root/sudo privileges for raw socket access
-- Only works against misconfigured switches
-- Modern switches may have protections against these attacks
-- Test in lab environments before production networks
+- Double-tag frame equals hand-built reference vector byte-for-byte: PASS
+- VLANTag/DoubleTag bytes + round-trip: PASS (3 tests)
+- Frame field positions (MACs, TPIDs, TCIs, ethertype, padding): PASS
+- Single-tagged ARP probe frame header: PASS
+- DTP frame letters: PASS (15 tests total)
+- Exit code: `0` on successful check, `1` on failure
 
 ## Legal Disclaimer
 
 **IMPORTANT: Read before use.**
 
-This project is provided for **educational and authorized security testing purposes only**. 
+This project is provided for **educational and authorized security testing purposes only**.
 
 ### Authorization Requirements
 - You MUST have explicit written permission from the network owner before using this tool
